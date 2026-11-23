@@ -87,6 +87,17 @@ button:disabled { opacity: .4; cursor: default; }
 .busy::after { content: ""; position: absolute; top: -4px; left: -4px; right: -4px; bottom: -4px; border-radius: 50%; border: 2px solid transparent; border-top-color: var(--acc); animation: spin .9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* YouTube players: always on screen while a deck plays YouTube, at least 200 x 200 px as YouTube requires */
+.videos { display: grid; gap: 8px; }
+.vbox { --acc: var(--a); display: grid; gap: 8px; padding: 10px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+.vbox[data-deck="B"] { --acc: var(--b); }
+.vbox[hidden] { display: none; }
+.vhead { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.yt { position: relative; width: 100%; min-width: 200px; aspect-ratio: 16 / 9; min-height: 200px; background: #000; border-radius: 10px; overflow: hidden; }
+.yt iframe { position: absolute; top: 0; left: 0; width: 100%; height: 100%; border: 0; }
+.vnote { margin: 0; font-size: 11.5px; line-height: 1.4; color: var(--muted); }
+.vnote a { color: var(--muted); }
+
 /* Tabs */
 .tabs { display: grid; grid-template-columns: 1fr 1fr; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 3px; gap: 3px; }
 .tabs button { height: 38px; border-radius: 9px; font-weight: 600; font-size: 14px; color: var(--muted); }
@@ -239,6 +250,18 @@ textarea::placeholder, input::placeholder { color: #5c6578; }
   </header>
   <div class="banners" id="banners"></div>
   <section class="mixer" id="mixer" aria-label="Mixer"></section>
+  <section class="videos" aria-label="YouTube players">
+    <div class="vbox" id="vbox-A" data-deck="A" hidden>
+      <div class="vhead"><b class="dk">A</b>Deck A · YouTube</div>
+      <div class="yt" id="yt-A"></div>
+      <p class="vnote">Plays in YouTube’s own player under the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a> and the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>.</p>
+    </div>
+    <div class="vbox" id="vbox-B" data-deck="B" hidden>
+      <div class="vhead"><b class="dk">B</b>Deck B · YouTube</div>
+      <div class="yt" id="yt-B"></div>
+      <p class="vnote">Plays in YouTube’s own player under the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a> and the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>.</p>
+    </div>
+  </section>
   <nav class="tabs" id="tabs" aria-label="Choose a deck">
     <button data-act="tab" data-deck="A" id="tabA">Deck A controls</button>
     <button data-act="tab" data-deck="B" id="tabB">Deck B controls</button>
@@ -255,7 +278,7 @@ textarea::placeholder, input::placeholder { color: #5c6578; }
 <script>
 'use strict';
 var PREVIEW = false;
-var VERSION = '1.0';
+var VERSION = '1.1';
 var KEY = 'dualdeck.state.v1', SKEY = 'dualdeck.settings.v1';
 
 /* ---------------- small helpers ---------------- */
@@ -546,7 +569,32 @@ function parsePlaylist(text) {
   });
   return out;
 }
-function urlItem(url, name) { return { id: uid(), kind: 'url', url: url, name: name || nameFromURL(url), pos: 0, dur: 0 }; }
+function isYouTubeHost(u) {
+  try { return /(^|\.)(youtube\.com|youtu\.be|youtube-nocookie\.com)$/i.test(new URL(u).hostname); } catch (e) { return false; }
+}
+function ytSeconds(t) {
+  if (!t) return 0;
+  if (/^\d+$/.test(t)) return +t;
+  var m = String(t).match(/^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/i);
+  return m ? (+(m[1] || 0)) * 3600 + (+(m[2] || 0)) * 60 + (+(m[3] || 0)) : 0;
+}
+function parseYouTube(u) {
+  var x, m, id = null;
+  try { x = new URL(u); } catch (e) { return null; }
+  var host = x.hostname.toLowerCase().replace(/^(www|m|music)\./, '');
+  if (host === 'youtu.be') id = x.pathname.split('/')[1];
+  else if (host === 'youtube.com' || host === 'youtube-nocookie.com') {
+    if (x.pathname === '/watch') id = x.searchParams.get('v');
+    else if ((m = x.pathname.match(/^\/(shorts|live|embed|v)\/([^/?#]+)/))) id = m[2];
+  }
+  if (!id || !/^[A-Za-z0-9_-]{11}$/.test(id)) return null;
+  return { vid: id, start: ytSeconds(x.searchParams.get('t') || x.searchParams.get('start') || '') };
+}
+function urlItem(url, name) {
+  var y = parseYouTube(url);
+  if (y) return { id: uid(), kind: 'yt', vid: y.vid, url: url, name: name || 'YouTube video', pos: y.start, dur: 0 };
+  return { id: uid(), kind: 'url', url: url, name: name || nameFromURL(url), pos: 0, dur: 0 };
+}
 
 /* ---------------- shared audio engine ---------------- */
 var engine = {
@@ -606,6 +654,7 @@ function Deck(id) {
   this.loadedId = null; this.mode = 'mixer'; this.scrub = null; this.live = false;
   this.loadToken = 0; this.objectURL = null; this.curURL = ''; this.pendingSeek = 0;
   this.graph = null; this.healTries = 0; this.everPlayed = false; this.errStreak = 0; this.wd = 0;
+  this.yt = null; this.ytState = -1; this.ytCreating = false; this.ytWant = null; this.ytVid = ''; this.ytHintT = 0;
   this.elM = this.mkEl(true);
   this.elD = this.mkEl(false);
   this.el = this.elM;
@@ -630,30 +679,51 @@ Deck.prototype.mkEl = function (cross) {
   return el;
 };
 Deck.prototype.current = function () { return this.queue[this.index] || null; };
-Deck.prototype.loaded = function () { var it = this.current(); return !!it && this.loadedId === it.id && !!this.el.getAttribute('src'); };
-Deck.prototype.isPlaying = function () { return this.loaded() && !this.el.paused; };
+Deck.prototype.isYT = function () { var it = this.current(); return !!(it && it.kind === 'yt'); };
+Deck.prototype.loaded = function () {
+  var it = this.current();
+  if (!it || this.loadedId !== it.id) return false;
+  if (it.kind === 'yt') return !!this.yt;
+  return !!this.el.getAttribute('src');
+};
+Deck.prototype.isPlaying = function () {
+  if (!this.loaded()) return false;
+  if (this.isYT()) return this.ytState === 1 || (this.ytState === 3 && this.wantPlay);
+  return !this.el.paused;
+};
 Deck.prototype.time = function () {
   if (this.scrub != null) return this.scrub;
+  var it = this.current();
+  if (it && it.kind === 'yt') {
+    if (this.loaded() && !this.ytWant) { try { return this.yt.getCurrentTime() || 0; } catch (e) {} }
+    return it.pos || 0;
+  }
   if (this.loaded() && this.el.readyState > 0) return this.el.currentTime;
-  var it = this.current(); return it ? (it.pos || 0) : 0;
+  return it ? (it.pos || 0) : 0;
 };
 Deck.prototype.duration = function () {
   var it = this.current();
+  if (it && it.kind === 'yt') {
+    if (this.loaded() && !this.ytWant) { try { var yd = this.yt.getDuration(); if (yd > 0) return yd; } catch (e) {} }
+    return it.dur || 0;
+  }
   if (this.loaded() && isFinite(this.el.duration) && this.el.duration > 0) return this.el.duration;
   return it && it.dur ? it.dur : 0;
 };
 Deck.prototype.effectiveDirect = function () {
   var it = this.current();
+  if (it && it.kind === 'yt') return true;
   if (this.engine === 'direct' || !engine.ok || this.graphFailed) return true;
   if (this.loaded()) return this.mode === 'direct';
   return !!(it && it.kind === 'url' && (isHLS(it.url) || it.cors === false));
 };
 Deck.prototype.modeFor = function (it) {
+  if (it.kind === 'yt') return 'yt';
   if (this.engine !== 'mixer' || !engine.ok || this.graphFailed) return 'direct';
   if (it.kind === 'url' && (isHLS(it.url) || it.cors === false)) return 'direct';
   return 'mixer';
 };
-Deck.prototype.loopFlag = function () { return this.repeat === 'one' || (this.repeat === 'all' && this.queue.length === 1); };
+Deck.prototype.loopFlag = function () { return !this.sleep.eot && (this.repeat === 'one' || (this.repeat === 'all' && this.queue.length === 1)); };
 Deck.prototype.updateLoop = function () { this.elM.loop = this.elD.loop = this.loopFlag(); };
 Deck.prototype.unload = function (el) {
   if (!el.getAttribute('src')) return;
@@ -661,11 +731,11 @@ Deck.prototype.unload = function (el) {
   el.removeAttribute('src');
   try { el.load(); } catch (e) {}
 };
-Deck.prototype.unloadAll = function () {
+Deck.prototype.unloadAudio = function () {
   this.unload(this.elM); this.unload(this.elD);
-  this.loadedId = null;
   if (this.objectURL) { URL.revokeObjectURL(this.objectURL); this.objectURL = null; }
 };
+Deck.prototype.unloadAll = function () { this.unloadAudio(); this.ytStop(); this.loadedId = null; };
 Deck.prototype.urlSync = function (it) {
   if (it.kind === 'url') return it.url;
   if (it.kind === 'demo') return demoURL(it.gen);
@@ -688,6 +758,18 @@ Deck.prototype.load = function (i, o) {
   if (prev && prev !== it && !settings.resume) prev.pos = 0;
   this.index = i; this.ab = { a: null, b: null }; this.err = ''; this.scrub = null;
   var startAt = o.startAt != null ? o.startAt : ((settings.resume && (it.dur || 0) >= 300) ? (it.pos || 0) : 0);
+  if (it.kind === 'yt') {
+    // YouTube plays in YouTube's own visible player; this deck's buttons drive it through the IFrame API.
+    if (o.startAt == null) startAt = it.pos || 0;
+    this.unloadAudio();
+    this.mode = 'yt'; this.loadedId = it.id; this.live = false; this.everPlayed = false;
+    this.status = o.autoplay ? 'loading' : 'idle';
+    if (o.autoplay) this.wantPlay = true;
+    this.ytLoad(it, startAt, !!o.autoplay);
+    ui.render(); app.save(); app.updateMediaSession();
+    return;
+  }
+  this.ytStop();
   if (!o.autoplay && it.kind === 'url') {
     this.unloadAll(); this.status = 'idle'; this.live = false; it.pos = startAt;
     ui.render(); app.save(); app.updateMediaSession();
@@ -751,6 +833,7 @@ Deck.prototype.ensureGraph = function () {
 };
 Deck.prototype.applyAudio = function (now) {
   var g = this.graph, v = this.muted ? 0 : this.volume;
+  if (this.yt) { try { this.yt.setVolume(Math.round(clamp(v, 0, 1) * 100)); if (v === 0) this.yt.mute(); else this.yt.unMute(); } catch (e) {} }
   try { this.elD.volume = clamp(v, 0, 1); this.elD.muted = this.muted; } catch (e) {}
   if (!g) { try { this.elM.volume = clamp(v, 0, 1); this.elM.muted = this.muted; } catch (e) {} return; }
   try { this.elM.muted = false; this.elM.volume = 1; } catch (e) {}
@@ -773,6 +856,16 @@ Deck.prototype.applyAudio = function (now) {
 };
 Deck.prototype.playEl = function () {
   var self = this, el = this.el;
+  if (this.isYT()) {
+    var cur = this.current();
+    this.wantPlay = true;
+    if (!this.yt) { this.status = 'loading'; this.ytLoad(cur, cur.pos || 0, true); ui.renderTransport(this); return; }
+    this.status = 'loading';
+    try { this.yt.playVideo(); } catch (e) {}
+    this.afterYTPlay();
+    ui.renderTransport(this);
+    return;
+  }
   if (!el.getAttribute('src')) { this.load(this.index < 0 ? 0 : this.index, { autoplay: true }); return; }
   if (this.mode === 'mixer') { if (engine.ensure()) this.ensureGraph(); }
   this.wantPlay = true;
@@ -817,7 +910,11 @@ Deck.prototype.play = function () {
 };
 Deck.prototype.pause = function () {
   this.wantPlay = false; clearTimeout(this.wd);
-  try { this.el.pause(); } catch (e) {}
+  if (this.isYT()) {
+    clearTimeout(this.ytHintT);
+    if (this.status === 'loading') this.status = 'idle';
+    if (this.yt) { try { this.yt.pauseVideo(); } catch (e) {} }
+  } else { try { this.el.pause(); } catch (e) {} }
   app.save(); ui.renderTransport(this);
 };
 Deck.prototype.toggle = function () { if (this.isPlaying() || (this.wantPlay && this.status === 'loading')) this.pause(); else this.play(); };
@@ -825,6 +922,12 @@ Deck.prototype.seek = function (t) {
   if (!this.current() || this.live) return;
   var dur = this.duration();
   t = clamp(t, 0, dur > 0 ? Math.max(0, dur - 0.2) : t);
+  if (this.isYT()) {
+    if (this.loaded()) { try { this.yt.seekTo(t, true); } catch (e) {} }
+    this.current().pos = t;
+    ui.tick(this); app.updatePosition(true);
+    return;
+  }
   if (this.loaded()) {
     if (this.el.readyState < 1) this.pendingSeek = t;
     else { try { this.el.currentTime = t; } catch (e) { this.pendingSeek = t; } }
@@ -864,7 +967,7 @@ Deck.prototype.next = function (auto) {
   this.load(order[np], { autoplay: play });
 };
 Deck.prototype.prev = function () {
-  if (this.loaded() && this.el.currentTime > 3) { this.seek(0); return; }
+  if (this.loaded() && this.time() > 3) { this.seek(0); return; }
   var n = this.queue.length; if (!n) return;
   var order = this.getOrder(), pos = order.indexOf(this.index);
   this.load(order[pos <= 0 ? n - 1 : pos - 1], { autoplay: this.wantPlay || this.isPlaying(), startAt: 0 });
@@ -880,17 +983,29 @@ Deck.prototype.toggleShuffle = function () {
 };
 Deck.prototype.cycleAB = function () {
   if (!this.loaded() || this.live) { toast('Start playing a file first, then set A–B'); return; }
-  var t = this.el.currentTime;
+  var t = this.time();
   if (this.ab.a == null) { this.ab.a = t; toast('A set at ' + fmtTime(t) + '. Tap A–B again at the end point.'); }
   else if (this.ab.b == null) {
     if (t <= this.ab.a + 0.5) { toast('B must come after A (' + fmtTime(this.ab.a) + ')'); return; }
-    this.ab.b = t; this.el.currentTime = this.ab.a; startABLoop();
+    this.ab.b = t; this.seek(this.ab.a);
+    if (this.isYT()) startYTPoll(); else startABLoop();
     toast('Looping ' + fmtTime(this.ab.a) + '–' + fmtTime(t));
   } else { this.ab = { a: null, b: null }; toast('A–B loop off'); }
   ui.renderDeck();
 };
-Deck.prototype.setRate = function (r) {
+Deck.prototype.setRate = function (r, fin) {
   if (this.live) { toast('Live streams always play at 1.0×'); return; }
+  if (this.isYT()) {
+    // YouTube only accepts its own list of speeds, so snap to the nearest one.
+    var avail = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2];
+    try { var a = this.yt && this.yt.getAvailablePlaybackRates(); if (a && a.length) avail = a; } catch (e) {}
+    var best = avail.reduce(function (b, x) { return Math.abs(x - r) < Math.abs(b - r) ? x : b; }, avail[0]);
+    if (fin !== false && Math.abs(best - r) > 0.001) toast('YouTube speeds: ' + avail.map(fmtRate).join(', '));
+    this.rate = best;
+    try { if (this.yt) this.yt.setPlaybackRate(best); } catch (e) {}
+    ui.paint(this); app.save(); app.updatePosition(true);
+    return;
+  }
   r = Math.round(clamp(r, 0.25, 4) * 100) / 100;
   this.rate = r;
   try { this.el.defaultPlaybackRate = r; this.el.playbackRate = r; } catch (e) {}
@@ -927,12 +1042,124 @@ Deck.prototype.setEngine = function (m) {
   if (m === this.engine) return;
   this.engine = m;
   var it = this.current();
-  if (it && this.loaded()) this.load(this.index, { autoplay: this.isPlaying() || this.wantPlay, startAt: this.el.currentTime || 0 });
+  if (it && it.kind !== 'yt' && this.loaded()) this.load(this.index, { autoplay: this.isPlaying() || this.wantPlay, startAt: this.el.currentTime || 0 });
   ui.render(); app.save();
 };
 Deck.prototype.setSleep = function (min) {
   this.sleep = { at: min > 0 ? Date.now() + min * 60000 : 0, eot: min === -1 };
+  this.updateLoop();
   this.resetFade(); this.scheduleSleepFade();
+};
+
+/* ---- YouTube (official embedded player, kept visible on screen) ---- */
+Deck.prototype.ytLoad = function (it, start, autoplay) {
+  var self = this;
+  if (PREVIEW) {
+    this.status = 'error'; this.wantPlay = false;
+    this.err = 'YouTube plays only in the installed DualDeck. This preview inside Claude can’t load YouTube.';
+    toast('Deck ' + this.id + ': ' + this.err, 5000);
+    return;
+  }
+  this.ytWant = { id: it.id, vid: it.vid, start: Math.max(0, Math.floor(start || 0)), autoplay: !!autoplay };
+  if (this.yt) { this.ytApplyWant(false); return; }
+  if (this.ytCreating) return;
+  this.ytCreating = true;
+  ui.syncVideos();
+  ytApi.load().then(function () {
+    var w = self.ytWant || { vid: it.vid, start: 0 };
+    var host = $('#yt-' + self.id);
+    host.innerHTML = '<div id="ytp-' + self.id + '"></div>';
+    new YT.Player('ytp-' + self.id, {
+      width: '100%', height: '100%', videoId: w.vid,
+      playerVars: { playsinline: 1, rel: 0, start: w.start, origin: location.origin },
+      events: {
+        onReady: function (e) { self.yt = e.target; self.ytCreating = false; self.ytVid = w.vid; self.applyAudio(); self.ytApplyWant(true); ui.render(); },
+        onStateChange: function (e) { self.onYTState(e.data); },
+        onError: function (e) { self.onYTError(e.data); },
+        onPlaybackRateChange: function (e) { self.rate = e.data; ui.paint(self); app.save(); }
+      }
+    });
+  }, function () {
+    self.ytCreating = false; ui.syncVideos();
+    if (!self.isYT()) return;
+    self.status = 'error'; self.wantPlay = false;
+    self.err = 'Couldn’t reach YouTube. Check your connection, then tap ▶ again.';
+    ui.render();
+  });
+};
+Deck.prototype.ytApplyWant = function (fresh) {
+  var w = this.ytWant, p = this.yt, cur = this.current();
+  this.ytWant = null;
+  if (!w || !p || !cur || cur.id !== w.id) return;
+  var go = w.autoplay || this.wantPlay;
+  try {
+    if (fresh && this.ytVid === w.vid) { if (go) p.playVideo(); }
+    else if (go) p.loadVideoById({ videoId: w.vid, startSeconds: w.start });
+    else p.cueVideoById({ videoId: w.vid, startSeconds: w.start });
+    this.ytVid = w.vid;
+    if (this.rate !== 1) p.setPlaybackRate(this.rate);
+  } catch (e) {}
+  if (go) this.afterYTPlay();
+};
+Deck.prototype.ytStop = function () {
+  clearTimeout(this.ytHintT); this.ytWant = null;
+  if (this.yt && this.ytState !== 5 && this.ytState !== -1) { try { this.yt.stopVideo(); } catch (e) {} }
+  this.ytState = -1;
+};
+Deck.prototype.afterYTPlay = function () {
+  var self = this;
+  clearTimeout(this.ytHintT);
+  this.ytHintT = setTimeout(function () {
+    if (!self.isYT() || !self.wantPlay || self.ytState === 1 || self.ytState === 3) return;
+    self.wantPlay = false; self.status = 'idle';
+    ui.renderTransport(self);
+    toast('Tap the video once to start it. iPhone only lets YouTube start from a tap on the video itself; after that, the deck buttons work.', 7000);
+  }, 2500);
+};
+Deck.prototype.onYTState = function (s) {
+  this.ytState = s;
+  if (!this.isYT()) return;
+  if (s === 1) {
+    clearTimeout(this.ytHintT);
+    this.status = 'playing'; this.wantPlay = true; this.everPlayed = true; this.err = ''; this.errStreak = 0;
+    startYTPoll(); this.ytInfo();
+  } else if (s === 3) { this.status = 'buffering'; }
+  else if (s === 2) { this.status = 'paused'; this.wantPlay = false; app.save(); }
+  else if (s === 0) { this.ytInfo(); this.onEnded(); return; }
+  else { if (!this.wantPlay) this.status = 'idle'; this.ytInfo(); }
+  ui.renderTransport(this); app.updateMediaSession();
+};
+Deck.prototype.ytInfo = function () {
+  var it = this.current(), p = this.yt, changed = false;
+  if (!it || it.kind !== 'yt' || !p) return;
+  try {
+    var vd = p.getVideoData ? p.getVideoData() : null;
+    if (vd && vd.video_id && vd.video_id !== it.vid) return; // player still reports the previous video
+    var du = p.getDuration(); if (du > 0 && Math.abs((it.dur || 0) - du) > 0.5) { it.dur = du; changed = true; }
+    if (vd) {
+      if (vd.title && vd.title !== it.title) { it.title = vd.title; changed = true; }
+      if (vd.author && vd.author !== it.artist) { it.artist = vd.author; changed = true; }
+    }
+  } catch (e) {}
+  if (changed) { ui.render(); app.save(); app.updateMediaSession(); }
+};
+Deck.prototype.onYTError = function (code) {
+  var self = this;
+  if (!this.isYT()) return;
+  clearTimeout(this.ytHintT);
+  var msg = {
+    2: 'This YouTube link isn’t valid.',
+    5: 'YouTube’s player hit an error. Try again.',
+    100: 'This video was removed or is private.',
+    101: 'The video’s owner doesn’t allow it to play outside YouTube.',
+    150: 'The video’s owner doesn’t allow it to play outside YouTube.',
+    153: 'YouTube couldn’t identify this app and refused to play. Reload DualDeck and try again.'
+  }[code] || 'YouTube couldn’t play this video.';
+  this.status = 'error'; this.err = msg;
+  toast('Deck ' + this.id + ': ' + msg, 5000);
+  if (this.wantPlay && this.queue.length > 1 && ++this.errStreak < this.queue.length) { var tok = this.loadToken; setTimeout(function () { if (tok === self.loadToken) self.next(true); }, 1200); }
+  else this.wantPlay = false;
+  ui.render(); app.updateMediaSession();
 };
 Deck.prototype.resetFade = function () {
   var g = this.graph; if (!g) return;
@@ -987,8 +1214,12 @@ Deck.prototype.onWaiting = function () { if (!this.el.paused) { this.status = 'b
 Deck.prototype.onEnded = function () {
   var it = this.current(); if (it) it.pos = 0;
   if (this.sleep.eot) {
-    this.sleep.eot = false; this.wantPlay = false; this.status = 'idle';
+    this.sleep.eot = false; this.wantPlay = false; this.status = 'idle'; this.updateLoop();
     toast('Deck ' + this.id + ' stopped (sleep timer)'); ui.render(); app.updateMediaSession(); return;
+  }
+  if (it && it.kind === 'yt' && this.loopFlag() && this.yt) {
+    try { this.yt.seekTo(0, true); this.yt.playVideo(); } catch (e) {}
+    return;
   }
   this.next(true);
 };
@@ -1009,7 +1240,7 @@ Deck.prototype.onError = function (el) {
   }[code] || 'This item couldn’t be played.';
   this.status = 'error'; this.err = msg;
   toast('Deck ' + this.id + ': ' + msg, 5000);
-  if (this.wantPlay && this.queue.length > 1 && ++this.errStreak < this.queue.length) setTimeout(function () { self.next(true); }, 1200);
+  if (this.wantPlay && this.queue.length > 1 && ++this.errStreak < this.queue.length) { var tok = this.loadToken; setTimeout(function () { if (tok === self.loadToken) self.next(true); }, 1200); }
   else this.wantPlay = false;
   ui.render(); app.updateMediaSession();
 };
@@ -1020,7 +1251,7 @@ Deck.prototype.addItems = function (items, play) {
   Array.prototype.push.apply(this.queue, items);
   if (this.shuffle) this.reshuffle();
   this.updateLoop();
-  if (play) this.load(first, { autoplay: true, startAt: 0 });
+  if (play) this.load(first, { autoplay: true, startAt: items[0].kind === 'yt' ? (items[0].pos || 0) : 0 });
   else if (this.index < 0) this.index = first;
   ui.render(); app.save();
 };
@@ -1060,7 +1291,7 @@ Deck.prototype.serialize = function () {
 };
 Deck.prototype.restore = function (o) {
   if (!o || typeof o !== 'object') return;
-  if (Array.isArray(o.queue)) this.queue = o.queue.filter(function (x) { return x && x.id && /^(file|url|demo)$/.test(x.kind); }).map(function (x) { var y = Object.assign({ pos: 0, dur: 0 }, x); if (y.kind === 'file' && !y.blobKey) y.blobKey = y.id; return y; });
+  if (Array.isArray(o.queue)) this.queue = o.queue.filter(function (x) { return x && x.id && /^(file|url|demo|yt)$/.test(x.kind) && (x.kind !== 'yt' || /^[A-Za-z0-9_-]{11}$/.test(x.vid)); }).map(function (x) { var y = Object.assign({ pos: 0, dur: 0 }, x); if (y.kind === 'file' && !y.blobKey) y.blobKey = y.id; return y; });
   this.index = this.queue.length ? clamp(parseInt(o.index, 10) || 0, 0, this.queue.length - 1) : -1;
   if (/^(off|all|one)$/.test(o.repeat)) this.repeat = o.repeat;
   this.shuffle = !!o.shuffle; this.keepPitch = o.keepPitch !== false; this.muted = !!o.muted; this.mono = !!o.mono;
@@ -1080,12 +1311,55 @@ function startABLoop() {
   (function loop() {
     var any = false;
     DECKS.forEach(function (d) {
-      if (d.ab.b == null) return; any = true;
+      if (d.ab.b == null || d.isYT()) return; any = true;
       if (d.loaded() && !d.el.paused && d.el.currentTime >= d.ab.b) d.el.currentTime = d.ab.a;
     });
     if (any) requestAnimationFrame(loop); else abRunning = false;
   })();
 }
+/* YouTube gives no time events, so poll its player while it plays: time display, A–B loop, saved position. */
+var ytPollT = 0;
+function startYTPoll() {
+  if (ytPollT) return;
+  ytPollT = setInterval(function () {
+    var any = false;
+    DECKS.forEach(function (d) {
+      var it = d.current();
+      if (!it || it.kind !== 'yt' || !d.yt || !d.isPlaying()) return;
+      any = true;
+      var t = d.time();
+      if (d.ab.b != null && t >= d.ab.b) { d.seek(d.ab.a); return; }
+      it.pos = t; app.posDirty = true;
+      ui.tick(d);
+      if (d === app.lockDeck()) app.updatePosition(false);
+    });
+    if (!any) { clearInterval(ytPollT); ytPollT = 0; }
+  }, 250);
+}
+var ytApi = {
+  state: 'idle', waiters: [],
+  load: function () {
+    var self = this;
+    if (PREVIEW) return Promise.reject(new Error('preview'));
+    if (this.state === 'ready' && window.YT && YT.Player) return Promise.resolve();
+    return new Promise(function (res, rej) {
+      self.waiters.push([res, rej]);
+      if (self.state === 'loading') return;
+      self.state = 'loading';
+      var prev = window.onYouTubeIframeAPIReady;
+      window.onYouTubeIframeAPIReady = function () {
+        if (typeof prev === 'function') { try { prev(); } catch (e) {} }
+        self.state = 'ready'; self.flush(null);
+      };
+      var s = document.createElement('script');
+      s.src = 'https://www.youtube.com/iframe_api'; s.async = true;
+      s.onerror = function () { self.state = 'idle'; self.flush(new Error('offline')); };
+      document.head.appendChild(s);
+      setTimeout(function () { if (self.state === 'loading') { self.state = 'idle'; self.flush(new Error('timeout')); } }, 15000);
+    });
+  },
+  flush: function (err) { var w = this.waiters; this.waiters = []; w.forEach(function (x) { if (err) x[1](err); else x[0](); }); }
+};
 
 /* ---------------- app ---------------- */
 var DECKS, decks, ART = {}, swState = PREVIEW ? 'not in preview' : 'checking';
@@ -1094,6 +1368,7 @@ function dispTitle(it) { return it.title || it.name || 'Untitled'; }
 function subLine(it) {
   var s = [it.artist, it.album].filter(Boolean).join(' · ');
   if (s) return s;
+  if (it.kind === 'yt') return 'YouTube';
   if (it.kind === 'url') return hostOf(it.url);
   if (it.kind === 'demo') return 'Generated in the app';
   return 'From Files' + (it.size ? ' · ' + fmtBytes(it.size) : '');
@@ -1101,7 +1376,8 @@ function subLine(it) {
 function isMissing(it) { return it.kind === 'file' && !it.saved && !it._file; }
 function rowSub(it) {
   var p = [];
-  if (it.kind === 'url') p.push(isHLS(it.url) ? 'HLS' : 'Stream', hostOf(it.url));
+  if (it.kind === 'yt') p.push('YouTube' + (it.artist ? ' · ' + it.artist : ''));
+  else if (it.kind === 'url') p.push(isHLS(it.url) ? 'HLS' : 'Stream', hostOf(it.url));
   else if (it.kind === 'demo') p.push('Demo');
   else p.push('File');
   if (it.dur) p.push(fmtTime(it.dur));
@@ -1163,7 +1439,9 @@ var app = {
         title: it ? dispTitle(it) : 'DualDeck',
         artist: it ? (it.artist || 'Deck ' + d.id) : 'Deck ' + d.id,
         album: it && it.album ? it.album : 'DualDeck · Deck ' + d.id,
-        artwork: [{ src: (it && it._art) || ART[d.id], sizes: '512x512', type: 'image/png' }]
+        artwork: [it && it.kind === 'yt' && !PREVIEW
+          ? { src: 'https://i.ytimg.com/vi/' + it.vid + '/hqdefault.jpg', sizes: '480x360', type: 'image/jpeg' }
+          : { src: (it && it._art) || ART[d.id], sizes: '512x512', type: 'image/png' }]
       });
     } catch (e) {}
     try { navigator.mediaSession.playbackState = this.anyPlaying() ? 'playing' : 'paused'; } catch (e) {}
@@ -1175,7 +1453,7 @@ var app = {
     var ms = navigator.mediaSession; if (!ms || !ms.setPositionState) return;
     var d = this.lockDeck(), dur = d.duration();
     try {
-      if (d.loaded() && dur > 0 && isFinite(dur) && !d.live) ms.setPositionState({ duration: dur, playbackRate: d.el.playbackRate || 1, position: clamp(d.el.currentTime, 0, dur) });
+      if (d.loaded() && dur > 0 && isFinite(dur) && !d.live) ms.setPositionState({ duration: dur, playbackRate: (d.isYT() ? d.rate : d.el.playbackRate) || 1, position: clamp(d.time(), 0, dur) });
       else ms.setPositionState();
     } catch (e) {}
   },
@@ -1266,6 +1544,12 @@ var app = {
   addURLs: function (text, name, deck, play) {
     var urls = (text.match(/https?:\/\/[^\s"'<>]+/gi) || []);
     if (!urls.length) { toast('Paste a link that starts with https:// (or http://)'); return Promise.resolve(false); }
+    var notVideo = urls.filter(function (u) { return isYouTubeHost(u) && !parseYouTube(u); });
+    if (notVideo.length) {
+      toast('YouTube playlist and channel links can’t be added. Open one video, tap Share, then Copy Link, and paste that.', 7000);
+      urls = urls.filter(function (u) { return notVideo.indexOf(u) < 0; });
+      if (!urls.length) return Promise.resolve(false);
+    }
     var expand = urls.map(function (u) {
       if (!/\.(pls|m3u)(\?|#|$)/i.test(u)) return Promise.resolve([urlItem(u, urls.length === 1 ? name : null)]);
       var ctl = window.AbortController ? new AbortController() : null;
@@ -1288,12 +1572,12 @@ var app = {
     });
   },
   repairAudio: function () {
-    var states = DECKS.map(function (d) { return { playing: d.isPlaying() || d.wantPlay, t: d.loaded() ? d.el.currentTime : null }; });
+    var states = DECKS.map(function (d) { return { playing: d.isPlaying() || d.wantPlay, t: d.loaded() && !d.isYT() ? d.el.currentTime : null, yt: d.isYT() }; });
     DECKS.forEach(function (d) {
       clearTimeout(d.wd);
       d.unload(d.elM); d.unload(d.elD);
       if (d.elM.parentNode) d.elM.parentNode.removeChild(d.elM);
-      d.graph = null; d.graphFailed = false; d.loadedId = null;
+      d.graph = null; d.graphFailed = false; if (!d.isYT()) d.loadedId = null;
       d.elM = d.mkEl(true); d.el = d.elM;
     });
     try { if (engine.ctx) engine.ctx.close(); } catch (e) {}
@@ -1301,7 +1585,7 @@ var app = {
     setAudioSession();
     engine.ensure();
     DECKS.forEach(function (d) { d.ensureGraph(); unlockEl(d.elM); unlockEl(d.elD); });
-    DECKS.forEach(function (d, i) { if (d.current()) d.load(d.index, { autoplay: states[i].playing, startAt: states[i].t != null ? states[i].t : undefined }); });
+    DECKS.forEach(function (d, i) { if (d.current() && !states[i].yt) d.load(d.index, { autoplay: states[i].playing, startAt: states[i].t != null ? states[i].t : undefined }); });
     this.hideBanner('stuck'); this.hideBanner('engine');
     toast('Audio engine restarted');
     ui.render();
@@ -1348,7 +1632,7 @@ var SL = {
   band: { min: function () { return -20; }, max: function () { return 20; }, step: 0.5, bipolar: true, get: function (d, s) { return d.eq.bands[+s.dataset.band]; },
     set: function (d, v, f, s) { d.setBand(+s.dataset.band, v); }, text: function (v) { return dB(v); }, label: 'Band' },
   rate: { min: function () { return 0.25; }, max: function () { return 4; }, step: 0.05, get: function (d) { return d.rate; },
-    set: function (d, v) { d.setRate(v); }, text: function (v) { return fmtRate(v); }, label: 'Speed' }
+    set: function (d, v, fin) { d.setRate(v, !!fin); }, text: function (v) { return fmtRate(v); }, label: 'Speed' }
 };
 function sliderHTML(name, d, disabled, attrs, label) {
   return '<div class="slider ' + name + (disabled ? ' disabled' : '') + '" data-slider="' + name + '" data-deck="' + d.id + '" ' + (attrs || '') +
@@ -1439,7 +1723,7 @@ function stripSub(d) {
   var st = d.status === 'buffering' || (d.status === 'loading' && d.wantPlay) ? 'Loading' : d.status === 'error' ? 'Error' : d.isPlaying() ? 'Playing' : (d.time() > 0 ? 'Paused' : 'Ready');
   if (d.live) return st + ' · Live · ' + fmtTime(d.time());
   var dur = d.duration();
-  return st + ' · ' + fmtTime(d.time()) + (dur ? ' / ' + fmtTime(dur) : '') + (d.effectiveDirect() ? ' · Direct' : '');
+  return st + ' · ' + fmtTime(d.time()) + (dur ? ' / ' + fmtTime(dur) : '') + (it.kind === 'yt' ? ' · YouTube' : d.effectiveDirect() ? ' · Direct' : '');
 }
 function playIcon(d) { return icon(d.isPlaying() || (d.wantPlay && (d.status === 'loading' || d.status === 'buffering')) ? 'pause' : 'play'); }
 function isBusy(d) { return d.wantPlay && (d.status === 'loading' || d.status === 'buffering'); }
@@ -1462,6 +1746,7 @@ function stripHTML(d) {
 function chipsHTML(d, it) {
   if (!it) return '';
   var c = [];
+  if (it.kind === 'yt') return '<span class="chip">YouTube</span><span class="chip">Screen on</span>';
   c.push('<span class="chip">' + (it.kind === 'url' ? (isHLS(it.url) ? 'HLS stream' : 'Stream') : it.kind === 'demo' ? 'Demo' : 'File') + '</span>');
   if (d.live) c.push('<span class="chip live">● Live</span>');
   c.push(d.effectiveDirect() ? '<span class="chip">Direct</span>' : '<span class="chip acc">Mixer</span>');
@@ -1490,12 +1775,13 @@ function queueHTML(d) {
       '<button class="pill" data-act="addURL" data-deck="' + d.id + '">' + icon('link', 'ic sm') + 'Add link</button>' +
       (d.queue.length ? '<button class="pill ghost" data-act="clearQ" data-deck="' + d.id + '">Clear</button>' : '') +
     '</div>' +
-    '<div class="qlist">' + (rows || '<p class="empty">No audio yet. “Add files” opens the Files app (plays offline). “Add link” takes MP3 or AAC links, HLS (.m3u8) and internet radio.</p>') + '</div>';
+    '<div class="qlist">' + (rows || '<p class="empty">No audio yet. “Add files” opens the Files app (plays offline). “Add link” takes MP3 or AAC links, HLS (.m3u8), internet radio and YouTube videos.</p>') + '</div>';
 }
 function soundHTML(d) {
   var direct = d.engine === 'direct', it = d.current(), lockedVol = isIOS && d.effectiveDirect(), dis = d.effectiveDirect();
   var why = '';
-  if (!direct && it && dis) why = it.kind === 'url' ? (isHLS(it.url) ? 'This HLS stream plays in Direct mode: iOS doesn’t let web apps mix HLS audio.' : 'This stream’s server blocks mixing (no CORS header), so it plays in Direct mode.') : 'Mixing isn’t available in this browser, so this deck plays in Direct mode.';
+  if (it && it.kind === 'yt') why = 'This item plays in YouTube’s own player. Mute works here; on iPhone, set its volume with the side buttons. Balance, mono, compressor and EQ don’t apply to YouTube.';
+  else if (!direct && it && dis) why = it.kind === 'url' ? (isHLS(it.url) ? 'This HLS stream plays in Direct mode: iOS doesn’t let web apps mix HLS audio.' : 'This stream’s server blocks mixing (no CORS header), so it plays in Direct mode.') : 'Mixing isn’t available in this browser, so this deck plays in Direct mode.';
   return '<div class="row"><span class="lbl">Engine</span><div class="seg" role="group" aria-label="Audio engine">' +
       '<button class="' + (!direct ? 'on' : '') + '" data-act="engine" data-deck="' + d.id + '" data-v="mixer" aria-pressed="' + !direct + '">Mixer</button>' +
       '<button class="' + (direct ? 'on' : '') + '" data-act="engine" data-deck="' + d.id + '" data-v="direct" aria-pressed="' + direct + '">Direct</button></div></div>' +
@@ -1515,7 +1801,7 @@ function eqHTML(d) {
   return '<div class="row"><span class="lbl">Equalizer</span><button class="sw' + (d.eq.on ? ' on' : '') + '" data-act="eqOn" data-deck="' + d.id + '" role="switch" aria-checked="' + d.eq.on + '" aria-label="Equalizer on"' + (dis ? ' disabled' : '') + '><i></i></button>' +
       '<select class="sel" id="preset-' + d.id + '" data-deck="' + d.id + '" aria-label="Equalizer preset"' + (dis ? ' disabled' : '') + '>' +
       names.map(function (n) { return '<option value="' + esc(n) + '"' + (n === d.eq.preset ? ' selected' : '') + '>' + esc(n) + '</option>'; }).join('') + '</select></div>' +
-    (dis ? '<p class="hint">EQ works in Mixer mode.</p>' : '') +
+    (dis ? '<p class="hint">' + (d.isYT() ? 'EQ doesn’t apply to YouTube items.' : 'EQ works in Mixer mode.') + '</p>' : '') +
     '<div class="row"><span class="lbl">Preamp</span>' + sliderHTML('pre', d, off) + '<span class="val" data-val="pre" data-deck="' + d.id + '">' + dB(d.eq.pre) + '</span></div>' +
     EQ_FREQS.map(function (f, i) {
       return '<div class="row band"><span class="lbl">' + EQ_LABELS[i] + '<small>Hz</small></span>' + sliderHTML('band', d, off, 'data-band="' + i + '"', EQ_LABELS[i] + ' hertz') + '<span class="val" data-val="band' + i + '" data-deck="' + d.id + '">' + dB(d.eq.bands[i]) + '</span></div>';
@@ -1524,6 +1810,7 @@ function eqHTML(d) {
 }
 function artHTML(d, it) {
   if (it && it._art) return '<img src="' + it._art + '" alt="">';
+  if (it && it.kind === 'yt' && !PREVIEW) return '<img src="https://i.ytimg.com/vi/' + esc(it.vid) + '/mqdefault.jpg" alt="">';
   return '<span class="gen" aria-hidden="true">' + d.id + '</span>';
 }
 function deckHTML(d) {
@@ -1587,7 +1874,8 @@ var SHEETS = {
       '<label class="fl" for="urlName">Name (optional, for a single link)</label>' +
       '<input id="urlName" type="text" placeholder="e.g. Morning news" autocomplete="off">' +
       '<div class="btnrow"><button class="pill" data-act="urlAdd" data-deck="' + d.id + '">Add to queue</button><button class="pill primary" data-act="urlAddPlay" data-deck="' + d.id + '">Add and play</button></div>' +
-      '<p class="hint">Plays direct audio links (MP3, AAC, M4A, WAV, FLAC), HLS streams (.m3u8) and internet radio (Icecast and Shoutcast). Web pages such as YouTube or Spotify can’t be played.</p>';
+      '<p class="hint">Plays direct audio links (MP3, AAC, M4A, WAV, FLAC), HLS streams (.m3u8) and internet radio (Icecast and Shoutcast).</p>' +
+      '<p class="hint">YouTube video links play in YouTube’s own player, shown under the decks. Tap the video once to start it. It needs the screen on and stops when the phone locks. Playlist links, Spotify and other web pages can’t be played.</p>';
   },
   item: function (d, i) {
     var it = d.queue[i]; if (!it) return '<h2>Item removed</h2>';
@@ -1636,7 +1924,13 @@ var SHEETS = {
 var ui = {
   tab: 'A', sheet: null, fileDeck: 'A',
   select: function (id) { this.tab = id; settings.tab = id; app.save(); this.render(); },
-  render: function () { this.renderStrips(); this.renderDeck(); this.paintMaster(); },
+  render: function () { this.renderStrips(); this.renderDeck(); this.paintMaster(); this.syncVideos(); },
+  syncVideos: function () {
+    DECKS.forEach(function (d) {
+      var it = d.current(), on = !PREVIEW && !!(it && it.kind === 'yt' && (d.yt || d.ytCreating));
+      var box = $('#vbox-' + d.id); if (box && box.hidden === on) box.hidden = !on;
+    });
+  },
   renderStrips: function () {
     $('#mixer').innerHTML = DECKS.map(stripHTML).join('');
     $('#tabA').className = this.tab === 'A' ? 'on' : ''; $('#tabB').className = this.tab === 'B' ? 'on' : '';
@@ -1843,7 +2137,7 @@ document.addEventListener('visibilitychange', function () {
     try { var p = engine.ctx.resume(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
     setTimeout(function () { app.onCtxState(); }, 700);
   }
-  var stopped = DECKS.filter(function (d) { return d.wantPlay && d.loaded() && d.el.paused && !d.el.ended; });
+  var stopped = DECKS.filter(function (d) { return d.wantPlay && d.loaded() && !d.isYT() && d.el.paused && !d.el.ended; });
   if (stopped.length) {
     var names = stopped.map(function (d) { return d.id; }).join(' and ');
     var mixerCut = stopped.some(function (d) { return d.sysPaused === 'mixer'; });

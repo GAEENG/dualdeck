@@ -2,7 +2,7 @@
    Caches the app itself so it opens with no connection (airplane mode).
    It never touches audio: online streams, files from your iPhone and
    range requests always go straight to their source. */
-var CACHE = 'dualdeck-1.0';
+var CACHE = 'dualdeck-1.1';
 var ASSETS = ['./', './index.html', './manifest.webmanifest', './icon-180.png', './icon-512.png'];
 
 self.addEventListener('install', function (e) {
