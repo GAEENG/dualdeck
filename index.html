@@ -243,7 +243,7 @@ textarea::placeholder, input::placeholder { color: #5c6578; }
   <header class="top">
     <div class="brand">
       <svg class="logo" viewBox="0 0 36 36" aria-hidden="true"><circle cx="13" cy="18" r="10.5" fill="#ff8a1f"/><circle cx="23" cy="18" r="10.5" fill="#2fd0c3" fill-opacity=".86"/><circle cx="13" cy="18" r="2.4" fill="#0b0d12"/><circle cx="23" cy="18" r="2.4" fill="#0b0d12"/></svg>
-      <div><h1>DualDeck</h1><p>Two players, one mix</p></div>
+      <div><h1>DualDeck</h1><p id="tagline">Two players, one mix</p></div>
     </div>
     <button class="ibtn" id="master" data-act="master" aria-label="Pause both decks"></button>
     <button class="ibtn" id="gear" data-act="openSettings" aria-label="Settings"></button>
@@ -278,7 +278,7 @@ textarea::placeholder, input::placeholder { color: #5c6578; }
 <script>
 'use strict';
 var PREVIEW = false;
-var VERSION = '1.1';
+var VERSION = '1.2';
 var KEY = 'dualdeck.state.v1', SKEY = 'dualdeck.settings.v1';
 
 /* ---------------- small helpers ---------------- */
@@ -382,7 +382,7 @@ var idb = {
 /* ---------------- settings ---------------- */
 var settings = Object.assign({
   tab: 'A', lockDeck: 'A', lockButtons: 'skip', remote: 'both', back: 15, fwd: 30,
-  keepFiles: true, resume: true, remain: true, sleepBoth: false,
+  keepFiles: true, resume: true, remain: true, sleepBoth: false, mixOthers: false,
   sections: { queue: true, sound: false, eq: false }, hidden: {}
 }, store.get(SKEY, {}));
 if (!settings.sections || typeof settings.sections !== 'object') settings.sections = { queue: true };
@@ -612,7 +612,7 @@ var engine = {
     return this.ctx;
   }
 };
-function setAudioSession() { try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) {} }
+function setAudioSession() { try { if (navigator.audioSession) navigator.audioSession.type = settings.mixOthers ? 'ambient' : 'playback'; } catch (e) {} }
 function setPitch(el, on) { try { el.preservesPitch = on; } catch (e) {} try { el.webkitPreservesPitch = on; } catch (e) {} try { el.mozPreservesPitch = on; } catch (e) {} }
 
 var EQ_FREQS = [31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000];
@@ -1905,6 +1905,9 @@ var SHEETS = {
       '<div class="row"><span class="lbl">Buttons</span>' + seg('lockButtons', [['skip', 'Skip ±sec'], ['tracks', 'Prev / Next']]) + '</div>' +
       '<div class="row"><span class="lbl">Play/Pause</span>' + seg('remote', [['both', 'Both decks'], ['one', 'That deck']]) + '</div>' +
       '<p class="hint">iOS shows one player on the lock screen. Pausing from the lock screen or AirPods pauses both decks unless you choose “That deck”.</p>' +
+      '<h3>Other apps</h3>' +
+      '<div class="row"><span class="lbl">Mix</span><button class="sw' + (settings.mixOthers ? ' on' : '') + '" data-act="mixOthers" role="switch" aria-checked="' + settings.mixOthers + '" aria-label="Mix with other apps"' + (navigator.audioSession ? '' : ' disabled') + '><i></i></button><span class="hint inl">Let Spotify, Apple Music or another app keep playing under DualDeck</span></div>' +
+      '<p class="hint' + (settings.mixOthers ? ' warn' : '') + '">' + (navigator.audioSession ? 'With Mix on, iOS goes quiet on DualDeck when you lock the phone, leave DualDeck or turn on Silent mode. Turn Mix off to play in the background again.' : 'This iPhone’s Safari doesn’t support mixing with other apps.') + '</p>' +
       '<h3>Skip buttons</h3>' +
       '<div class="row"><span class="lbl">Back</span>' + seg('back', [[5, '5s'], [10, '10s'], [15, '15s'], [30, '30s']]) + '</div>' +
       '<div class="row"><span class="lbl">Forward</span>' + seg('fwd', [[10, '10s'], [15, '15s'], [30, '30s'], [60, '60s']]) + '</div>' +
@@ -1924,7 +1927,10 @@ var SHEETS = {
 var ui = {
   tab: 'A', sheet: null, fileDeck: 'A',
   select: function (id) { this.tab = id; settings.tab = id; app.save(); this.render(); },
-  render: function () { this.renderStrips(); this.renderDeck(); this.paintMaster(); this.syncVideos(); },
+  render: function () {
+    this.renderStrips(); this.renderDeck(); this.paintMaster(); this.syncVideos();
+    var tg = $('#tagline'); if (tg) tg.textContent = settings.mixOthers ? 'Mixing with other apps' : 'Two players, one mix';
+  },
   syncVideos: function () {
     DECKS.forEach(function (d) {
       var it = d.current(), on = !PREVIEW && !!(it && it.kind === 'yt' && (d.yt || d.ytCreating));
@@ -2051,7 +2057,13 @@ var ACTIONS = {
   },
   sec: function (a) { var k = a.t.dataset.sec; settings.sections[k] = !settings.sections[k]; app.save(); ui.renderDeck(); },
   addFiles: function (a) { ui.fileDeck = a.d.id; var inp = $('#filepick'); inp.value = ''; inp.click(); },
-  addURL: function (a) { ui.openSheet('url', a.d); setTimeout(function () { var t = $('#urlIn'); if (t) t.focus(); }, 60); },
+  addURL: function (a) {
+    ui.openSheet('url', a.d);
+    setTimeout(function () {
+      var t = $('#urlIn'), f = document.activeElement;
+      if (t && (!f || f === document.body || f === $('#sheet'))) t.focus(); // never steal focus from a field already tapped
+    }, 60);
+  },
   urlAdd: function (a) { submitURL(a.d, false); },
   urlAddPlay: function (a) { submitURL(a.d, true); },
   playAt: function (a) {
@@ -2100,6 +2112,15 @@ var ACTIONS = {
     ui.openSheet('settings');
   },
   resumeSet: function () { settings.resume = !settings.resume; app.save(); ui.openSheet('settings'); },
+  mixOthers: function () {
+    if (!navigator.audioSession) return;
+    settings.mixOthers = !settings.mixOthers; app.save();
+    setAudioSession();
+    // Restart playing decks inside this tap so iOS applies the new audio type now.
+    DECKS.forEach(function (d) { if (d.isPlaying() && !d.isYT()) { try { d.el.pause(); } catch (e) {} d.playEl(); } });
+    ui.render(); ui.openSheet('settings');
+    toast(settings.mixOthers ? 'Mix on: other apps keep playing. DualDeck goes quiet when you lock the phone, leave DualDeck or turn on Silent mode.' : 'Mix off: DualDeck can play in the background again, and it pauses other apps’ audio.', 6000);
+  },
   wipe: function (a) {
     twoStep(a.t, 'Tap again to delete', function () {
       idb.clear().catch(function () {});
@@ -2141,7 +2162,10 @@ document.addEventListener('visibilitychange', function () {
   if (stopped.length) {
     var names = stopped.map(function (d) { return d.id; }).join(' and ');
     var mixerCut = stopped.some(function (d) { return d.sysPaused === 'mixer'; });
-    app.showBanner('resume', mixerCut
+    if (settings.mixOthers) mixerCut = 'mix';
+    app.showBanner('resume', mixerCut === 'mix'
+      ? 'Deck ' + names + ' paused while you were away: with Mix with other apps on, iOS doesn’t let DualDeck play in the background. Turn Mix off in Settings to keep playing.'
+      : mixerCut
       ? 'iOS stopped the Mixer engine for Deck ' + names + ' while the screen was locked, so playback paused where it stopped. If this keeps happening, switch that deck to Direct in Sound.'
       : 'iOS paused Deck ' + names + ' while DualDeck was in the background.', 'Resume', function () { stopped.forEach(function (d) { d.sysPaused = false; d.play(); }); }, 'warn');
   }
